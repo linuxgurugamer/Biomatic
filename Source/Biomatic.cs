@@ -1,18 +1,72 @@
 ﻿using System;
-using System.Collections.Generic;
 using UnityEngine;
+using System.Collections.Generic;
 using KSP.IO;
-using Biomatic.Extensions;
 using KSP.Localization;
-using ToolbarControl_NS;
+using UnityEngine.Networking;
+using Biomatic.Extensions;
+using ClickThroughFix;
 using KSP.UI.Screens;
+using ToolbarControl_NS;
+using System.Linq;
 
 namespace Biomatic
 {
 
     class Biomatic : PartModule
     {
+        internal static Biomatic Instance; // internal -> private
+
+        internal const string MODID = "Biomatic_ID";
+        internal const string MODNAME = "Biomatic";
+
+        const string shownOnButton = "BiomaticGreyOn";
+        const string shownOffButton = "BiomaticGreyOff";
+        const string hiddenOnButton = "BiomaticColourOn";
+        const string hiddenOffButton = "BiomaticColourOff";
+        const string unavailableButton = "BiomaticUnavailable";
+        const string IconPath = "Biomatic/Plugins/PluginData/ToolbarIcons/";
+
         private static Rect windowPos = new Rect();
+        #region Fields
+        [KSPField(isPersistant = true, guiActive = true, guiActiveEditor = true,
+                    groupName = "Biomatic", groupStartCollapsed = true,
+                    guiName = "Biomatic:"),
+        UI_Toggle(disabledText = "Off", enabledText = "On")]
+        public static bool _BiomaticIsEnabled = true;
+        public static bool BiomaticIsEnabled
+        {
+            get { return _BiomaticIsEnabled; }
+            set { _BiomaticIsEnabled = BiomaticIsEnabled; }
+        }
+
+        [KSPField(guiActive = true, guiActiveEditor = true, groupName = "Biomatic",
+                    guiName = "EC rate")]
+        public float ECresourceConsumptionRate = 0.05f;
+        #endregion
+        #region Events
+
+        [KSPAction("Biomatic: Toggle")]
+        public void toggleAction(KSPActionParam kap)
+        { BiomaticIsEnabled = !BiomaticIsEnabled; }
+        #endregion
+        #region Actions
+        [KSPAction("Biomatic: Enable")]
+        public void enableAction(KSPActionParam kap)
+        { BiomaticIsEnabled = true; }
+
+        [KSPAction("Biomatic: Disable")]
+        public void disableAction(KSPActionParam kap)
+        { BiomaticIsEnabled = false; }
+        #endregion
+        #region Private functions
+        // private static bool IsPrimary = true;
+        private static bool _isPrimary = true;
+        internal static bool IsPrimary
+        {
+            get { return _isPrimary; }
+            set { _isPrimary = IsPrimary; }
+        }
 
         //private static bool UseToolbar = false;
         private static bool toolbarShowSettings = false;
@@ -27,7 +81,6 @@ namespace Biomatic
         }
 
         //private static StockToolbar stockToolbar = null;
-
         private static bool useStockToolBar = true;
         public static bool UseStockToolBar
         {
@@ -49,14 +102,26 @@ namespace Biomatic
         // resize window? - prevents blinking when buttons clicked
         private static bool sizechange = true;
 
-        private static bool hideUI = false;
+        /// <summary><para>Hides all user interface elements.</summary>
+        bool _hideUIwhenPaused = false;
+
+        private static bool _hideUI = false;
         public static bool HideUI
         {
-            get { return hideUI; }
-            set { hideUI = value; }
+            get { return _hideUI; }
+            set { _hideUI = value; }
         }
 
-        private static string warpButtonText = "None";
+        public void HideUIAction()
+        {
+            _hideUI = true;
+        }
+        void ShowUIAction()
+        {
+            _hideUI = false;
+        }
+
+        private static string warpButtonText = Localizer.Format("#Biomatic_None");
         private static bool deWarp = false;
         private static bool includeAlt = false;
         private static bool showHistory = false;
@@ -105,20 +170,34 @@ namespace Biomatic
         private static bool beepCreated = false;
         private static int soundType = 0;
 
-        internal const string MODID = "Biomatic_ID";
-        internal const string MODNAME = "Biomatic";
+        /// <summary>Module information shown in editors</summary>
+        private string info = string.Empty;
 
-        const string shownOnButton = "BiomaticGreyOn";
-        const string shownOffButton = "BiomaticGreyOff";
-        const string hiddenOnButton = "BiomaticColourOn";
-        const string hiddenOffButton = "BiomaticColourOff";
-        const string unavailableButton = "BiomaticUnavailable";
+        /// <summary>ElectricCharge identification number</summary>
+        public static int ElectricChargeID;
+
+        // #region Mono
+        #endregion
+        #region Public Functions
+
+        /// <summary>Called when part is added to the craft.</summary>
+        public override void OnAwake()
+        {
+            // Log.Info(String.Format("OnAwake for {0}", name));
+        }
 
         public void Start()
         {
+            Log.Info("OnStart");
+            if (Instance != null)
+            {
+                // Reloading of GameDatabase causes another copy of addon to spawn at next opportunity. Suppress it.
+                // see: https://forum.kerbalspaceprogram.com/index.php?/topic/7542-x/&do=findComment&comment=3574980
+                Destroy(gameObject);
+                return;
+            }
 
             audioSource = GetComponent<AudioSource>();
-
 
             toolbarControl = gameObject.AddComponent<ToolbarControl>();
             toolbarControl.AddToAllToolbars(
@@ -126,190 +205,74 @@ namespace Biomatic
                 ApplicationLauncher.AppScenes.FLIGHT | ApplicationLauncher.AppScenes.MAPVIEW,
                 MODID,
                 "biomaticButton",
-                "Biomatic/PluginData/ToolbarIcons/BiomaticUnavailable",
-                "Biomatic/PluginData/ToolbarIcons/BiomeUnavailable",
+                IconPath + "BiomaticUnavailable",
                 MODNAME
             );
 
+            GameEvents.onHideUI.Add(this.HideUIAction);
+            GameEvents.onShowUI.Add(this.ShowUIAction);
+            GameEvents.onGamePause.Add(this.HideUIWhenPaused);
+            GameEvents.onGameUnpause.Add(this.ShowUIwhenPaused);
 
+            if (ElectricChargeID == default(int))
+                ElectricChargeID = PartResourceLibrary.Instance.GetDefinition("ElectricCharge").id;
         }
 
-        private void OnClick()
+
+
+        public override void OnFixedUpdate()
         {
-            toolbarShowSettings = !toolbarShowSettings;
-            UpdateToolbarButton();
-            sizechange = true;
-        }
-#if false
-        private void BiomaticHide()
-        {
-            if (Biomatic.ToolbarShowSettings)
+            if (BiomaticIsEnabled && HighLogic.CurrentGame.Parameters.CustomParams<Options>().UseEC)
             {
-                Biomatic.ToolbarShowSettings = false;
-                UpdateToolbarButton();
-            }
-        }
-
-        private void BiomaticShow()
-        {
-            if (!Biomatic.ToolbarShowSettings)
-            {
-                Biomatic.ToolbarShowSettings = true;
-                UpdateToolbarButton();
-            }
-        }
-
-#endif
-
-        private void OnGUI()
-        {
-            try
-            {
-                if (!TechChecker.TechAvailable)
+                if (ConsumeEC(TimeWarp.fixedDeltaTime) == false)
                 {
-                    return;
+                    ScreenMessages.PostScreenMessage(Localizer.Format("#Biomatic_PM_EC01")); // "Electric Charge Depleted. Stopping Biomatic Scanning."
+                    //Log.Info("OnFixedUpdate: Electric Charge Depleted. Stopping Biomatic Scanning.");
                 }
+            }
+            base.OnFixedUpdate();
+        }
 
-                if (historyArray == null)
-                {
-                    historyArray = new BiomeSituation[5];
-                }
-
-                if (Event.current.type == EventType.Repaint || Event.current.isMouse)
-                {
-#if false
-                    if (!useStockToolBar) // blizzy
-                    {
-                        try
+        public override void OnUpdate()
+        {
+            if (!BiomaticIsEnabled) return;
+            /*            if (BiomaticIsEnabled && HighLogic.CurrentGame.Parameters.CustomParams<Options>().UseEC)
                         {
-                            toolbarButton = new ToolbarButtonWrapper("Biomatic", "toolbarButton");
-                            RefreshBlizzyButton();
-                            toolbarButton.ToolTip = Localizer.Format("#Biomatic_Window_title2");//"Biomatic settings"
-                            toolbarButton.Visible = true;
-                            toolbarButton.AddButtonClickHandler((e) =>
+                            if (ConsumeEC(TimeWarp.fixedDeltaTime) == false)
                             {
-                                toolbarShowSettings = !toolbarShowSettings;
-                                RefreshBlizzyButton();
-                                sizechange = true;
-                            });
-                        }
-                        catch (Exception) { }
-
-                        UseToolbar = true;
-                    }
-                    else // stock
-                    {
-                        UseToolbar = true;
-                    }
-#endif
-
-                }
-
-                Draw();
-            }
-            catch (Exception ex)
-            {
-                print("Biomatic - OnGUI(): " + ex.Message);
-            }
+                                ScreenMessages.PostScreenMessage(Localizer.Format("#Biomatic_PM_EC01")); // "Electric Charge Depleted. Stopping Biomatic Scanning."
+                               // Log.Info("OnUpdate: Electric Charge Depleted. Stopping Biomatic Scanning.");
+                            }
+                        }*/
+            base.OnUpdate();
         }
-#if false
-        private bool RefreshStockButton()
+
+        public bool ConsumeEC(double elapsed)
         {
-            bool result = false;
-
-            try
-            {
-                if (stockToolbar == null)
-                {
-                    stockToolbar = (StockToolbar)StockToolbar.FindObjectOfType(typeof(StockToolbar));
-
-                    if (stockToolbar != null)
-                    {
-                        result = true;
-                        stockToolbar.ButtonNeeded = true;
-                        stockToolbar.CreateButton();
-                        if (!stockToolbar.ButtonNeeded)
+            Log.Info(String.Format("ConsumeEC : elapsed: {0}", elapsed.ToString()));
+            double ec = 0, amount = 0;
+            if (CheatOptions.InfiniteElectricity == true) { Log.Info(String.Format("CheatOptions.InfiniteElectricity({0})", CheatOptions.InfiniteElectricity.ToString())); return true; }
+            else foreach (Part part in ActiveVessel.parts)
+                    foreach (PartResource res in part.Resources)
+                        if (res.resourceName == "ElectricCharge" && res.amount > 0)
                         {
-                            result = false;
-                            windowPos.height = 20;
-                            lostToStaging = true;
+                            Log.Info(String.Format("part {0}.{1}:{2}]", part.name, res.resourceName, res.amount));
+                            ec += res.amount;  // tally total EC available on ship
+                            Log.Info(String.Format("total EC available {0} ]", ec.ToString()));
                         }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                print("Biomatic - RefreshStockButton(): " + ex.Message);
-            }
 
-            return result;
+            amount = ECresourceConsumptionRate * TimeWarp.fixedDeltaTime;
+            Log.Info(String.Format("EC available: {0} / Consumption Rate: {1} / fixedDeltaTime {2}", ec.ToString(), ECresourceConsumptionRate.ToString(), TimeWarp.fixedDeltaTime.ToString()));
+            // if not enough EC to power, then SHut.It.Down
+            if (ec < amount) return false;
+
+            //? compute consumption
+            //? don't forget to consume the EC needed to power this beast
+            part.RequestResource(ElectricChargeID, amount);
+            return true;
         }
-#endif
-        void UpdateToolbarButton()
-        {
-            string blizzyButtonPath = "Biomatic/PluginData/ToolbarIcons/Biom";
-            bool relevant = IsRelevant();
-
-            if (relevant)
-            {
-                blizzyButtonPath += toolbarShowSettings ? "Grey" : "Colour";
-
-                if (!systemOn)
-                {
-                    blizzyButtonPath += "X";
-                }
-
-            }
-            else
-                blizzyButtonPath += "Unavailable";
-
-
-            string stockButtonPath;
-            if (TechChecker.TechAvailable)
-            {
-                if (Biomatic.SystemOn)
-                {
-                    stockButtonPath = (Biomatic.ToolbarShowSettings ? shownOnButton : hiddenOnButton);
-                }
-                else
-                {
-                    stockButtonPath = (Biomatic.ToolbarShowSettings ? shownOffButton : hiddenOffButton);
-                }
-            }
-            else
-            {
-                stockButtonPath = unavailableButton;
-            }
-
-
-            toolbarControl.SetTexture("Biomatic/PluginData/ToolbarIcons/" + stockButtonPath, blizzyButtonPath);
-        }
-#if false
-        private bool RefreshBlizzyButton()
-        {
-            bool relevant = IsRelevant();
-            //toolbarButton.Visible = relevant;
-
-            if (relevant)
-            {
-                string path = "Biomatic/PluginData/ToolbarIcons/Biom";
-                path += toolbarShowSettings ? "Grey" : "Colour";
-
-                if (!systemOn)
-                {
-                    path += "X";
-                }
-
-                toolbarButton.TexturePath = path;
-            }
-            else
-            {
-                lostToStaging = true;
-            }
-
-            return relevant;
-        }
-#endif
+        #endregion
+        #region IO
         public override void OnSave(ConfigNode node)
         {
             try
@@ -341,10 +304,7 @@ namespace Biomatic
 
                 config.save();
             }
-            catch (Exception ex)
-            {
-                print("Biomatic - OnSave(): " + ex.Message);
-            }
+            catch (Exception ex) { print("Biomatic - OnSave(): " + ex.Message); }
         }
 
         public override void OnLoad(ConfigNode node)
@@ -357,20 +317,11 @@ namespace Biomatic
             {
                 windowPos = config.GetValue<Rect>("Window Position");
 
-                if (listIgnore == null)
-                {
-                    listIgnore = new List<string>();
-                }
-                else
-                {
-                    listIgnore.Clear();
-                }
+                if (listIgnore == null) listIgnore = new List<string>();
+                else listIgnore.Clear();
 
                 int count = config.GetValue<int>("List items");
-                for (int i = 0; i < count; i++)
-                {
-                    listIgnore.Add(config.GetValue<string>("Item" + i.ToString()));
-                }
+                for (int i = 0; i < count; i++) listIgnore.Add(config.GetValue<string>("Item" + i.ToString()));
 
                 deWarp = config.GetValue<bool>("DeWarp");
                 includeAlt = config.GetValue<bool>("Use altitude");
@@ -392,24 +343,74 @@ namespace Biomatic
 
                 perVessel = config.GetValue<bool>("Per vessel");
             }
-            catch (Exception ex)
-            {
-                print("Biomatic - OnLoad(): " + ex.Message);
-            }
+            catch (Exception ex) { print("Biomatic - OnLoad(): " + ex.Message); }
 
             warpButtonText = "None";
             if (deWarp)
             {
                 warpButtonText = "Gradual";
-                if (instantDewarp)
-                {
-                    warpButtonText = "Instant";
-                }
+                if (instantDewarp) warpButtonText = "Instant";
             }
 
             windowPos.width = fixedwidth;
+
+            base.OnLoad(node);
+        }
+        #endregion
+        #region GUIButtons
+        public void HideUIWhenPaused()
+        {
+            if (HighLogic.CurrentGame.Parameters.CustomParams<Options>().hideWhenPaused)
+                _hideUIwhenPaused = true;
+        }
+        void ShowUIwhenPaused()
+        {
+            _hideUIwhenPaused = false;
+        }
+        private void OnClick()
+        {
+            toolbarShowSettings = !toolbarShowSettings;
+            UpdateToolbarButton();
+            sizechange = true;
         }
 
+        private void OnGUI()
+        {
+            if (!HideUI && !_hideUIwhenPaused) // && AppLauncherKerbalGPS.Instance.displayGUI)
+                try
+                {
+                    if (!TechChecker.TechAvailable || !BiomaticIsEnabled) return;
+
+                    if (historyArray == null) historyArray = new BiomeSituation[5];
+
+                    if (!HighLogic.CurrentGame.Parameters.CustomParams<Options>().useAlternateSkin) GUI.skin = HighLogic.Skin;
+                    Draw();
+                }
+                catch (Exception ex) { print("Biomatic - OnGUI(): " + ex.Message); }
+        }
+
+        void UpdateToolbarButton()
+        {
+            string blizzyButtonPath = IconPath + "Biom";
+            bool relevant = IsRelevant;
+            if (relevant)
+            {
+                blizzyButtonPath += toolbarShowSettings ? "Grey" : "Colour";
+                if (!systemOn) blizzyButtonPath += "X";
+            }
+            else blizzyButtonPath += "Unavailable";
+
+            string stockButtonPath;
+            if (TechChecker.TechAvailable)
+            {
+                if (Biomatic.SystemOn) stockButtonPath = (Biomatic.ToolbarShowSettings ? shownOnButton : hiddenOnButton);
+                else stockButtonPath = (Biomatic.ToolbarShowSettings ? shownOffButton : hiddenOffButton);
+            }
+            else stockButtonPath = unavailableButton;
+            toolbarControl.SetTexture(IconPath + stockButtonPath, blizzyButtonPath);
+        }
+        #endregion
+        #region GUI
         private void Draw()
         {
             DoResize();
@@ -427,37 +428,17 @@ namespace Biomatic
                     newInstance = false;
                     lostToStaging = false;
 
-#if false
-                    if (useStockToolBar)
-                    {
-                        if (!RefreshStockButton())
-                        {
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        if (!RefreshBlizzyButton())
-                        {
-                            return;
-                        }
-                    }
-#endif
                     UpdateToolbarButton();
                 }
 
-                if (RightConditionsToDraw())
+                if (RightConditionsToDraw)
                 {
                     if (HideUI)
                     {
-                        try
-                        {
-                            DoBiomaticContent();
-                        }
+                        try { DoBiomaticContent(); }
                         catch (Exception ex)
                         {
-                            print("Biomatic - Draw() - DoBiomaticContent() threw " + ex.Message);
-                            Log.dbg("Biomatic - Draw() - DoBiomaticContent() threw " + ex.Message);
+                            Log.Info(String.Format("Draw() - DoBiomaticContent() threw " + ex.Message.ToString()));
                         }
                     }
                     else
@@ -478,10 +459,7 @@ namespace Biomatic
                         styleValue.normal.textColor = Color.white;
                         styleValue.alignment = TextAnchor.MiddleCenter;
 
-                        if (ConditionalShow != prevConditionalShow)
-                        {
-                            sizechange = true;
-                        }
+                        if (ConditionalShow != prevConditionalShow) sizechange = true;
 
                         if (sizechange)
                         {
@@ -489,58 +467,83 @@ namespace Biomatic
                             sizechange = false;
                         }
 
-                        windowPos = GUILayout.Window(this.ClassID, windowPos, OnWindow, ConditionalShow ? Localizer.Format("#Biomatic_Window_title1") : Localizer.Format("#Biomatic_Window_title2"), GUILayout.Width(fixedwidth));//"Biomatic""Biomatic settings"
+                       // windowPos = ClickThruBlocker.GUILayoutWindow(this.ClassID, windowPos, OnWindow, ConditionalShow ? Localizer.Format("#Biomatic_Window_title1") : Localizer.Format("#Biomatic_Window_title2"), GUILayout.Width(fixedwidth));//"Biomatic""Biomatic settings"
+                        windowPos = ClickThruBlocker.GUILayoutWindow(ClassID, windowPos, OnWindow, ConditionalShow ? Localizer.Format("#Biomatic_Window_title1") : Localizer.Format("#Biomatic_Window_title2"), GUILayout.Width(fixedwidth));//"Biomatic""Biomatic settings"
                         windowPos.width = fixedwidth;
 
-                        if (windowPos.x == 0 && windowPos.y == 0)
-                        {
-                            windowPos = windowPos.CentreScreen();
-                        }
+                        if (windowPos.x == 0 && windowPos.y == 0) windowPos = windowPos.CentreScreen();
                     }
                 }
             }
         }
 
-        private bool RightConditionsToDraw()
+        private bool RightConditionsToDraw
         {
-            bool retval = true;
-
-            if (!part.IsPrimary(ActiveVessel.parts, ClassID))
+            get
             {
-                return false;
-            }
+                if (!part.IsPrimary(ActiveVessel.parts, ClassID)) return false;
 
-            if (lostToStaging)
-            {
-                prevConditionalShow = ConditionalShow = false;
-                return false;
-            }
+                if (lostToStaging)
+                {
+                    prevConditionalShow = ConditionalShow = false;
+                    return false;
+                }
 
-            if (!systemOn)
-            {
-                retval = false;
-            }
+                bool retval = true;
+                if (!systemOn || !BiomaticIsEnabled) retval = false;
 
-            prevConditionalShow = ConditionalShow;
-            ConditionalShow = retval;
-            return ConditionalShow || (/* UseToolbar && */ toolbarShowSettings);
+                prevConditionalShow = ConditionalShow;
+                ConditionalShow = retval;
+                return ConditionalShow || toolbarShowSettings;
+            }
         }
 
         private void OnWindow(int windowID)
         {
-            try
-            {
-                DoBiomaticContent();
-            }
+            try { DoBiomaticContent(); }
             catch (Exception ex)
             {
-                print("Biomatic - OnWindow() - DoBiomaticContent() threw " + ex.Message);
-                Log.dbg("Biomatic - OnWindow() - DoBiomaticContent() threw " + ex.Message);
+
+                Log.Info(String.Format("Biomatic - OnWindow() - DoBiomaticContent() threw " + ex.Message.ToString()));
             }
 
-            if (!handleClicked)
+            if (!handleClicked) GUI.DragWindow();
+        }
+
+        private void DoResize()
+        {
+            if (windowPos.width > 25)
             {
-                GUI.DragWindow();
+                Vector3 mousePos = Input.mousePosition;
+                mousePos.y = Screen.height - mousePos.y;    // Convert to GUI coords
+
+                Rect windowHandle = new Rect(windowPos.x + windowPos.width - 25, windowPos.y, 25, windowPos.height);
+
+                // If clicked on window resize widget
+                if (!handleClicked && Input.GetMouseButtonDown(0) &&
+                    windowHandle.x < mousePos.x && windowHandle.x + windowHandle.width > mousePos.x &&
+                    windowHandle.y < mousePos.y && windowHandle.y + windowHandle.height > mousePos.y)
+                {
+                    handleClicked = true;
+                    clickedPosition = mousePos;
+                    originalWindow = windowPos;
+                }
+
+                if (handleClicked)
+                {
+                    // Resize window by dragging
+                    if (Input.GetMouseButton(0))
+                    {
+                        windowPos.width = Mathf.Clamp(originalWindow.width + (mousePos.x - clickedPosition.x), defaultwidth, defaultwidth * 2);
+                        fixedwidth = windowPos.width;
+                    }
+                    // Finish resizing window
+                    if (Input.GetMouseButtonUp(0))
+                    {
+                        handleClicked = false;
+                        sizechange = true;
+                    }
+                }
             }
         }
 
@@ -548,39 +551,26 @@ namespace Biomatic
         {
             if (ConditionalShow)
             {
-                isPowered = IsPowered();
+                isPowered = IsPowered;
                 if (isPowered != wasPowered)
                 {
                     sizechange = true;
                     wasPowered = isPowered;
                 }
 
-                if (isPowered)
+                if (isPowered && BiomaticIsEnabled)
                 {
-                    biome = GetBiomeSituation();
-
+                    biome = BiomeSituation;
                     if (!prevBiome.IsSameAs(biome, includeAlt, perVessel))
                     {
                         prevBiome = biome;
-
-                        if (soundType == 2)
-                        {
-                            DoSound();
-                        }
+                        if (soundType == 2) DoSound();
 
                         if (!BiomeInList(biome.GetText(includeAlt, perVessel)))
                         {
-                            if (soundType == 1)
-                            {
-                                DoSound();
-                            }
-
-                            if (deWarp)
-                            {
-                                TimeWarp.SetRate(0, instantDewarp);
-                            }
+                            if (soundType == 1) DoSound();
+                            if (deWarp) TimeWarp.SetRate(0, instantDewarp);
                         }
-
                         AddToArray(biome);
                     }
                 }
@@ -593,19 +583,13 @@ namespace Biomatic
             }
         }
 
-        private BiomeSituation GetBiomeSituation()
-        {
-            return new BiomeSituation(GetBiomeString(), GetSituationString(), ActiveVessel.mainBody.name, ActiveVessel.id);
-        }
+        private BiomeSituation BiomeSituation => new BiomeSituation(BiomeString, SituationString, ActiveVessel.mainBody.name, ActiveVessel.id);
 
         private void AddToArray(BiomeSituation biome)
         {
             for (int i = 4; i > 0; i--)
             {
-                if (historyArray[i] == null)
-                {
-                    sizechange = true;
-                }
+                if (historyArray[i] == null) sizechange = true;
                 historyArray[i] = historyArray[i - 1];
             }
             historyArray[0] = biome;
@@ -613,7 +597,7 @@ namespace Biomatic
 
         private void ShowGraphicalIndicator()
         {
-            if (systemOn && ConditionalShow)
+            if (systemOn && ConditionalShow && BiomaticIsEnabled)
             {
                 if (showDescription)
                 {
@@ -625,10 +609,7 @@ namespace Biomatic
 
                 DisplayLine(historyArray[0]);
 
-                if (isPowered && showHistory)
-                {
-                    ShowHistoricBiomeSits();
-                }
+                if (isPowered && showHistory) ShowHistoricBiomeSits();
             }
         }
 
@@ -636,16 +617,8 @@ namespace Biomatic
         {
             styleButton.normal.textColor = Color.red;
             for (int i = 1; i < 5; i++)
-            {
-                if (historyArray[i] != null)
-                {
-                    DisplayLine(historyArray[i]);
-                }
-                else
-                {
-                    break;
-                }
-            }
+                if (historyArray[i] != null) DisplayLine(historyArray[i]);
+                else break;
         }
 
         private void DisplayLine(BiomeSituation bs)
@@ -660,14 +633,8 @@ namespace Biomatic
                 styleButton.normal.textColor = (text.Contains("\u2713") ? Color.red : Color.green);
                 if (GUILayout.Button(".", styleButton, GUILayout.ExpandWidth(true)))
                 {
-                    if (text.Contains("\u2713"))
-                    {
-                        RemoveCurrentBiomeFromList(bs);
-                    }
-                    else
-                    {
-                        AddCurrentBiomeToList(bs);
-                    }
+                    if (text.Contains("\u2713")) RemoveCurrentBiomeFromList(bs);
+                    else AddCurrentBiomeToList(bs);
                 }
                 styleButton.normal.textColor = styleButton.hover.textColor = styleButton.focused.textColor = styleButton.active.textColor = Color.white;
                 styleButton.active.textColor = Color.green;
@@ -684,76 +651,75 @@ namespace Biomatic
         {
             string result = ActiveVessel.mainBody.name + "." + bio;
 
-            if (useAlt)
-            {
-                result = GetSituationString() + "." + result;
-            }
+            if (useAlt) result = SituationString + "." + result;
 
             return result;
         }
 
-        private string GetSituationString()
+        private string SituationString
         {
-            string result = "";
-            ExperimentSituations sit = ScienceUtil.GetExperimentSituation(ActiveVessel);
-            switch (sit)
+            get
             {
-                case ExperimentSituations.FlyingHigh:
-                    result = Localizer.Format("#Biomatic_Situation_FlyingHigh");//"High flight"
-                    break;
-                case ExperimentSituations.FlyingLow:
-                    result = Localizer.Format("#Biomatic_Situation_FlyingLow");//"Low flight"
-                    break;
-                case ExperimentSituations.InSpaceHigh:
-                    result = Localizer.Format("#Biomatic_Situation_InSpaceHigh");//"High above"
-                    break;
-                case ExperimentSituations.InSpaceLow:
-                    result = Localizer.Format("#Biomatic_Situation_InSpaceLow");//"Just above"
-                    break;
-                case ExperimentSituations.SrfLanded:
-                    result = Localizer.Format("#Biomatic_Situation_SrfLanded");//"Landed"
-                    break;
-                case ExperimentSituations.SrfSplashed:
-                    result = Localizer.Format("#Biomatic_Situation_SrfSplashed");//"Splashed"
-                    break;
-            }
+                string result = String.Empty;
+                ExperimentSituations sit = ScienceUtil.GetExperimentSituation(ActiveVessel);
+                switch (sit)
+                {
+                    case ExperimentSituations.FlyingHigh:
+                        result = Localizer.Format("#Biomatic_Situation_FlyingHigh");//"High flight"
+                        break;
+                    case ExperimentSituations.FlyingLow:
+                        result = Localizer.Format("#Biomatic_Situation_FlyingLow");//"Low flight"
+                        break;
+                    case ExperimentSituations.InSpaceHigh:
+                        result = Localizer.Format("#Biomatic_Situation_InSpaceHigh");//"High above"
+                        break;
+                    case ExperimentSituations.InSpaceLow:
+                        result = Localizer.Format("#Biomatic_Situation_InSpaceLow");//"Just above"
+                        break;
+                    case ExperimentSituations.SrfLanded:
+                        result = Localizer.Format("#Biomatic_Situation_SrfLanded");//"Landed"
+                        break;
+                    case ExperimentSituations.SrfSplashed:
+                        result = Localizer.Format("#Biomatic_Situation_SrfSplashed");//"Splashed"
+                        break;
+                }
 
-            return result;
+                return result;
+            }
         }
 
         // show settings buttons / fields
         private void ShowSettings()
         {
-            if (/* UseToolbar && */ toolbarShowSettings)
+            if (toolbarShowSettings)
             {
                 GUILayout.BeginHorizontal(GUILayout.Width(fixedwidth - margin));
                 styleButton.normal.textColor = Color.white;
-                if (GUILayout.Button(Localizer.Format("#Biomatic_Button_Remove", ActiveVessel.mainBody.bodyDisplayName), styleButton, GUILayout.ExpandWidth(true)))//"Remove " +  + " biomes from list"
-                {
+                if (GUILayout.Button(Localizer.Format("#Biomatic_Button_Remove", ActiveVessel.mainBody.bodyDisplayName), styleButton, GUILayout.ExpandWidth(true)))
                     RemoveCurrentBody();
-                }
+                //"Remove " +  + " biomes from list"
                 GUILayout.EndHorizontal();
 
                 // de-warp
                 GUILayout.BeginHorizontal(GUILayout.Width(fixedwidth - margin));
                 styleValue.normal.textColor = Color.white;
-                GUILayout.Label(Localizer.Format("#Biomatic_Label_De_warp"), styleValue);//"De-warp "
+                GUILayout.Label(Localizer.Format("#Biomatic_Label_Warp"), styleValue);//"De-warp "
                 if (GUILayout.Button(warpButtonText, styleButton, GUILayout.ExpandWidth(true)))
                 {
-                    if (warpButtonText == "None")
+                    if (warpButtonText == Localizer.Format("#Biomatic_None"))
                     {
-                        warpButtonText = "Gradual";
+                        warpButtonText = Localizer.Format("#Biomatic_Gradual");
                         deWarp = true;
                         instantDewarp = false;
                     }
-                    else if (warpButtonText == "Gradual")
+                    else if (warpButtonText == Localizer.Format("#Biomatic_Gradual"))
                     {
-                        warpButtonText = "Instant";
+                        warpButtonText = Localizer.Format("#Biomatic_Instant");
                         instantDewarp = true;
                     }
-                    else if (warpButtonText == "Instant")
+                    else if (warpButtonText == Localizer.Format("#Biomatic_Instant"))
                     {
-                        warpButtonText = "None";
+                        warpButtonText = Localizer.Format("#Biomatic_None");
                         deWarp = false;
                         instantDewarp = false;
                     }
@@ -782,10 +748,7 @@ namespace Biomatic
                 if (GUILayout.Button(beepButtonText, styleButton, GUILayout.ExpandWidth(true)))
                 {
                     soundType++;
-                    if (soundType > 2)
-                    {
-                        soundType = 0;
-                    }
+                    if (soundType > 2) soundType = 0;
                 }
                 GUILayout.EndHorizontal();
 
@@ -805,7 +768,7 @@ namespace Biomatic
                 GUILayout.BeginHorizontal(GUILayout.Width(fixedwidth - margin));
                 bool oldShowHistory = showHistory;
                 showHistory = GUILayout.Toggle(showHistory, " " + Localizer.Format("#Biomatic_Button_Recent"), styleToggle, null);//Recent
-
+                GUILayout.FlexibleSpace();
                 // use altitude
                 bool oldIncludeAlt = includeAlt;
                 includeAlt = GUILayout.Toggle(includeAlt, " " + Localizer.Format("#Biomatic_Button_Altitude"), styleToggle, null);//Altitude
@@ -813,6 +776,7 @@ namespace Biomatic
                 {
                     sizechange = true;
                 }
+                GUILayout.FlexibleSpace();
 
                 // show description
                 bool oldShowDescription = showDescription;
@@ -822,33 +786,21 @@ namespace Biomatic
                 {
                     sizechange = true;
                 }
+                GUILayout.FlexibleSpace();
 
                 styleButton.normal.textColor = styleButton.focused.textColor = styleButton.hover.textColor = styleButton.active.textColor = systemOn ? Color.red : Color.green;
                 styleValue.normal.textColor = Color.white;
 
                 // On / Off switch
                 GUILayout.BeginHorizontal(GUILayout.Width(fixedwidth - margin));
-                GUILayout.Label(Localizer.Format("#Biomatic_Window_title1") + " ", styleValue);//Biomatic
+                GUILayout.Label(Localizer.Format("#Biomatic_Window_title1") + " " + Version.Text + " ", styleValue);//Biomatic
                 styleValue.normal.textColor = systemOn ? Color.green : Color.red;
                 GUILayout.Label(systemOn ? Localizer.Format("#Biomatic_Generic_ON") : Localizer.Format("#Biomatic_Generic_OFF"), styleValue);//"ON ""OFF "
                 if (GUILayout.Button(systemOn ? Localizer.Format("#Biomatic_Button_Switchoff") : Localizer.Format("#Biomatic_Button_Switchon"), styleButton, GUILayout.ExpandWidth(true)))//"Switch off""Switch on"
                 {
                     systemOn = !systemOn;
                     UpdateToolbarButton();
-#if false
-                    if (!useStockToolBar)
-                    {
-                        RefreshBlizzyButton();
-                    }
-                    else
-                    {
-                        StockToolbar stb = (StockToolbar)StockToolbar.FindObjectOfType(typeof(StockToolbar));
-                        if (stb != null)
-                        {
-                            stb.RefreshButtonTexture();
-                        }
-                    }
-#endif
+
                     sizechange = true;
                 }
                 GUILayout.EndHorizontal();
@@ -860,107 +812,99 @@ namespace Biomatic
 
         public void OnDestroy()
         {
-#if false
-            if (toolbarButton != null)
-            {
-                toolbarButton.Destroy();
-                // added
-                toolbarButton = null;
-            }
-#endif
             if (toolbarControl != null)
             {
                 toolbarControl.OnDestroy();
                 Destroy(toolbarControl);
             }
+            Instance = null;
+        }
+#endregion
+#region Internal
+        private bool IsPowered
+        {
+            get
+            {
+                foreach (Part p in ActiveVessel.parts)
+                    foreach (PartResource pr in p.Resources)
+                        if (pr.resourceName.Equals("ElectricCharge") && pr.flowState)
+                            if (pr.amount >= ECresourceConsumptionRate) return true;
+
+                return false;
+            }
         }
 
-        private bool IsPowered()
+        public CBAttributeMapSO.MapAttribute Biome
         {
-            foreach (Part p in ActiveVessel.parts)
+            get
             {
-                foreach (PartResource pr in p.Resources)
+                CBAttributeMapSO.MapAttribute mapAttribute;
+
+                try
                 {
-                    if (pr.resourceName.Equals("ElectricCharge") && pr.flowState)
-                    {
-                        if (pr.amount > 0.04)
-                        {
-                            return true;
-                        }
-                    }
+                    var lat = ActiveVessel.latitude * Math.PI / 180d; // double
+                    var lon = ActiveVessel.longitude * Math.PI / 180d; // double
+
+                    mapAttribute = ActiveVessel.mainBody.BiomeMap.GetAtt(lat, lon);
                 }
-            }
+                catch (NullReferenceException)
+                {
+                    mapAttribute = new CBAttributeMapSO.MapAttribute
+                    {
+                        name = "N/A"
+                    };
+                }
 
-            return false;
+                return mapAttribute;
+            }
         }
 
-        public CBAttributeMapSO.MapAttribute GetBiome()
+        public string BiomeString
         {
-            CBAttributeMapSO.MapAttribute mapAttribute;
-
-            try
+            get
             {
-                double lat = ActiveVessel.latitude * Math.PI / 180d;
-                double lon = ActiveVessel.longitude * Math.PI / 180d;
+                string biome_desc = String.Empty;
 
-                mapAttribute = ActiveVessel.mainBody.BiomeMap.GetAtt(lat, lon);
+                try
+                {
+                    var lat = ActiveVessel.latitude * Math.PI / 180d; // double
+                    var lon = ActiveVessel.longitude * Math.PI / 180d; // double
+
+                    biome_desc = FlightGlobals.ActiveVessel.mainBody.BiomeMap.GetAtt(lat, lon).name;
+                }
+                catch (NullReferenceException)
+                {
+                }
+
+                // for worlds without biomes, just use body name
+                if (biome_desc == "") biome_desc = ActiveVessel.mainBody.name;
+
+                return biome_desc;
             }
-            catch (NullReferenceException)
-            {
-                mapAttribute = new CBAttributeMapSO.MapAttribute();
-                mapAttribute.name = "N/A";
-            }
-
-            return mapAttribute;
-        }
-
-        public string GetBiomeString()
-        {
-            string biome_desc = "";
-
-            try
-            {
-                double lat = ActiveVessel.latitude * Math.PI / 180d;
-                double lon = ActiveVessel.longitude * Math.PI / 180d;
-
-                biome_desc = FlightGlobals.ActiveVessel.mainBody.BiomeMap.GetAtt(lat, lon).name;
-            }
-            catch (NullReferenceException)
-            {
-            }
-
-            // for worlds without biomes, just use body name
-            if (biome_desc == "")
-            {
-                biome_desc = ActiveVessel.mainBody.name;
-            }
-
-            return biome_desc;
         }
 
         private void AddCurrentBiomeToList(BiomeSituation bs)
         {
             string fullname = bs.GetText(true, true);
-            if (!BiomeInList(fullname))
-            {
-                listIgnore.Add(fullname);
-            }
+            if (!BiomeInList(fullname)) listIgnore.Add(fullname);
         }
 
         private bool BiomeInList(string fullname)
         {
             bool result = false;
 
-            List<string>.Enumerator en = listIgnore.GetEnumerator();
-            while (en.MoveNext())
+            using (List<string>.Enumerator en = listIgnore.GetEnumerator())
             {
-                if (en.Current.Contains(fullname))
+                while (en.MoveNext())
                 {
-                    result = true;
-                    break;
+                    if (en.Current.Contains(fullname))
+                    {
+                        result = true;
+                        break;
+                    }
                 }
+                en.Dispose();
             }
-            en.Dispose();
 
             return result;
         }
@@ -972,25 +916,21 @@ namespace Biomatic
                 while (true)
                 {
                     bool removed = false;
-                    foreach (string s in listIgnore)
+                    foreach (string s in from string s in listIgnore
+                                         where s.Contains(ActiveVessel.mainBody.name) && (!perVessel || s.Contains(ActiveVessel.id.ToString()))
+                                         select s)
                     {
-                        if (s.Contains(ActiveVessel.mainBody.name) && (!perVessel || s.Contains(ActiveVessel.id.ToString())))
-                        {
-                            listIgnore.Remove(s);
-                            removed = true;
-                            break;
-                        }
-                    }
-                    if (!removed)
-                    {
+                        listIgnore.Remove(s);
+                        removed = true;
                         break;
                     }
+
+                    if (!removed) break;
                 }
             }
             catch (Exception ex)
             {
-                print("Biomatic - RemoveCurrentBody(): " + ex.Message);
-                Log.dbg("Biomatic - RemoveCurrentBody(): " + ex.Message);
+                Log.Info(ex.Message);
             }
         }
 
@@ -1001,116 +941,65 @@ namespace Biomatic
                 while (true)
                 {
                     bool removed = false;
-                    foreach (string s in listIgnore)
+                    foreach (var s in from string s in listIgnore
+                                      where s.Contains(bs.Biome) && s.Contains(bs.Body) && (!includeAlt || s.Contains(bs.Situation)) && (!perVessel || s.Contains(bs.VesselGUID.ToString()))
+                                      select s)
                     {
-                        if (s.Contains(bs.Biome) && s.Contains(bs.Body) && (!includeAlt || s.Contains(bs.Situation)) && (!perVessel || s.Contains(bs.VesselGUID.ToString())))
-                        {
-                            listIgnore.Remove(s);
-                            removed = true;
-                            break;
-                        }
-                    }
-                    if (!removed)
-                    {
+                        listIgnore.Remove(s);
+                        removed = true;
                         break;
                     }
+
+                    if (!removed) break;
                 }
             }
             catch (Exception ex)
             {
-                print("Biomatic - RemoveCurrentBiomeFromList(): " + ex.Message);
-                Log.dbg("Biomatic - RemoveCurrentBiomeFromList(): " + ex.Message);
+                //print("Biomatic - RemoveCurrentBiomeFromList(): " + ex.Message);
+                Log.Info(String.Format("RemoveCurrentBiomeFromList(): {0} ", ex.Message));
             }
         }
 
         private string GetOutputString(BiomeSituation bs)
         {
             if (bs == null)
-            {
                 return "----";
-            }
 
             string output = bs.GetDescription(includeAlt);
 
             if (BiomeInList(bs.GetText(includeAlt, perVessel)))
-            {
                 output += " \u2713";
-            }
 
             return output;
         }
 
-        public static bool IsRelevant()
+        public static bool IsRelevant
         {
-            if (HighLogic.LoadedScene == GameScenes.FLIGHT || HighLogic.LoadedScene == GameScenes.PSYSTEM)
+            get
             {
-                if (FlightGlobals.ActiveVessel != null)
+                if ((HighLogic.LoadedScene == GameScenes.FLIGHT || HighLogic.LoadedScene == GameScenes.PSYSTEM) && FlightGlobals.ActiveVessel != null)
                 {
                     List<Biomatic> bio = FlightGlobals.ActiveVessel.FindPartModulesImplementing<Biomatic>();
 
                     if (bio != null && bio.Count > 0)
-                    {
                         return true;
-                    }
                 }
-            }
-
-            return false;
-        }
-
-        private void DoResize()
-        {
-            if (windowPos.width > 25)
-            {
-                Vector3 mousePos = Input.mousePosition;
-                mousePos.y = Screen.height - mousePos.y;    // Convert to GUI coords
-
-                Rect windowHandle = new Rect(windowPos.x + windowPos.width - 25, windowPos.y, 25, windowPos.height);
-
-                // If clicked on window resize widget
-                if (!handleClicked && (Input.GetMouseButtonDown(0) &&
-                    windowHandle.x < mousePos.x && windowHandle.x + windowHandle.width > mousePos.x &&
-                    windowHandle.y < mousePos.y && windowHandle.y + windowHandle.height > mousePos.y))
-                {
-                    handleClicked = true;
-                    clickedPosition = mousePos;
-                    originalWindow = windowPos;
-                }
-
-                if (handleClicked)
-                {
-                    // Resize window by dragging
-                    if (Input.GetMouseButton(0))
-                    {
-                        windowPos.width = Mathf.Clamp(originalWindow.width + (mousePos.x - clickedPosition.x), defaultwidth, defaultwidth * 2);
-                        fixedwidth = windowPos.width;
-                    }
-                    // Finish resizing window
-                    if (Input.GetMouseButtonUp(0))
-                    {
-                        handleClicked = false;
-                        sizechange = true;
-                    }
-                }
+                return false;
             }
         }
 
+        #endregion
+        #region Sound
         private void DoSound()
         {
-            if (audioSource.isPlaying)
-            {
-                audioSource.Stop();
-            }
+            if (audioSource.isPlaying) audioSource.Stop();
 
-            audioSource.PlayOneShot(MakeBeep(), 0.9f);
+            audioSource.PlayOneShot(MakeBeep, 0.9f);
         }
 
-        private AudioClip MakeBeep()
-        {
-            return AudioClip.Create("beep", 4096, 1, 44100, false, false, OnAudioRead, OnAudioSetPosition);
-        }
+        private AudioClip MakeBeep => AudioClip.Create("beep", 4096, 1, 44100, false, OnAudioRead, OnAudioSetPosition);
 
-        void OnAudioRead(float[] data)
+        private void OnAudioRead(float[] data)
         {
             try
             {
@@ -1135,7 +1024,6 @@ namespace Biomatic
 
                     if (phase > 2 * Math.PI) phase = 0;
                 }
-
                 cachedBeep = data;
             }
             catch (Exception ex)
@@ -1148,11 +1036,44 @@ namespace Biomatic
         {
             return;
         }
+        #endregion Sound
+        #region GetInfo
+        private static string RateString(double Rate)
+        {
+            //  double rate = double.Parse(value.value);
+            string sfx = "/sec";
+            if (Rate <= 0.004444444f)
+            {
+                Rate *= 3600;
+                sfx = "/hr";
+            }
+            else if (Rate < 0.2666667f)
+            {
+                Rate *= 60;
+                sfx = "/min";
+            }
+            // limit decimal places to 10 and add sfx
+            //return String.Format(FuelRateFormat, Rate, sfx);
+            return Rate.ToString("###.#####") + " EC" + sfx;
+        }
 
         public override string GetInfo()
+        /// <summary>Formats the information for the part information in the editors.</summary>
+        /// <returns>info</returns>
         {
-            return "GetInfo, put EC usage here";
-
+            //? this is what is show in the editor
+            //? As annoying as it is, pre-parsing the config MUST be done here, because this is called during part loading.
+            //? The config is only fully parsed after everything is fully loaded (which is why it's in OnStart())
+            if (info == string.Empty)
+            {
+                info += Localizer.Format("#Biomatic_manu"); // #Biomatic_manu = Biff Industries, Inc.
+                info += "\n v" + Version.Text; // Biomatic Version Number text
+                info += "\n<color=#b4d455FF>" + Localizer.Format("#Biomatic_desc"); // #Biomatic_desc = In-flight biome identifier
+                info += "\n\n<color=orange>Requires:</color><color=#FFFFFFFF> \n- <b>" + Localizer.Format("#autoLOC_252004"); // #autoLOC_252004 = ElectricCharge
+                info += "</b>: </color><color=#99FF00FF>" + RateString(ECresourceConsumptionRate) + "</color>";
+            }
+            return info;
         }
     }
 }
+#endregion
